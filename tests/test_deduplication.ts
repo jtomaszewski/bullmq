@@ -1175,6 +1175,202 @@ describe('deduplication', function () {
 
         await worker.close();
       });
+
+      it('should clean up deduplication keys after requeue completes', async function () {
+        const testName = 'test-cleanup';
+        let jobProcessingStarted = false;
+        let processedJobs = 0;
+        let firstJobCompleted = false;
+
+        const worker = new Worker(
+          queueName,
+          async job => {
+            jobProcessingStarted = true;
+            processedJobs++;
+            await delay(300);
+            if (processedJobs === 1) {
+              firstJobCompleted = true;
+            }
+            return `result-${processedJobs}`;
+          },
+          {
+            autorun: false,
+            connection,
+            prefix,
+          },
+        );
+
+        await worker.waitUntilReady();
+
+        const deduplicationId = 'cleanup-test';
+        const deduplicationKey = `${prefix}:${queueName}:de:${deduplicationId}`;
+        const requeueKey = `${prefix}:${queueName}:re:${deduplicationId}`;
+
+        // Add first job
+        const firstJob = await queue.add(
+          testName,
+          { data: 'first' },
+          { deduplication: { id: deduplicationId, requeueIfActive: true } },
+        );
+
+        // Start processing
+        worker.run();
+
+        // Wait for processing to start
+        while (!jobProcessingStarted) {
+          await delay(10);
+        }
+
+        // Add second job while first is active - should set requeue flag
+        const secondJob = await queue.add(
+          testName,
+          { data: 'second' },
+          { deduplication: { id: deduplicationId, requeueIfActive: true } },
+        );
+
+        expect(secondJob.id).to.equal(firstJob.id);
+
+        // Wait for first job to complete
+        while (!firstJobCompleted) {
+          await delay(10);
+        }
+
+        // After first job completes, deduplication key should exist and point to requeued job
+        // Requeue key should be cleaned up
+        const deduplicationKeyExistsAfterFirst = await connection.exists(
+          deduplicationKey,
+        );
+        const requeueKeyExistsAfterFirst = await connection.exists(requeueKey);
+        const deduplicationValue = await connection.get(deduplicationKey);
+
+        expect(deduplicationKeyExistsAfterFirst).to.equal(
+          1,
+          'Deduplication key should exist after first job completes',
+        );
+        expect(requeueKeyExistsAfterFirst).to.equal(
+          0,
+          'Requeue key should be cleaned up after first job completes',
+        );
+        expect(deduplicationValue).to.not.equal(
+          firstJob.id,
+          'Deduplication key should point to requeued job',
+        );
+
+        // Wait for second job to complete
+        await new Promise<void>(resolve => {
+          worker.on('completed', job => {
+            if (processedJobs >= 2) {
+              resolve();
+            }
+          });
+        });
+
+        expect(processedJobs).to.equal(2);
+
+        // After second job completes, both keys should be cleaned up
+        const deduplicationKeyExistsAfterSecond = await connection.exists(
+          deduplicationKey,
+        );
+        const requeueKeyExistsAfterSecond = await connection.exists(requeueKey);
+
+        expect(deduplicationKeyExistsAfterSecond).to.equal(
+          0,
+          'Deduplication key should be cleaned up after second job completes',
+        );
+        expect(requeueKeyExistsAfterSecond).to.equal(
+          0,
+          'Requeue key should remain cleaned up',
+        );
+
+        await worker.close();
+      });
+
+      it('should allow further deduplication while requeued job is active', async function () {
+        const testName = 'test-chain-deduplication';
+        let jobProcessingStarted = false;
+        let processedJobs = 0;
+        let firstJobCompleted = false;
+
+        const worker = new Worker(
+          queueName,
+          async job => {
+            jobProcessingStarted = true;
+            processedJobs++;
+            await delay(400);
+            if (processedJobs === 1) {
+              firstJobCompleted = true;
+            }
+            return `result-${processedJobs}`;
+          },
+          {
+            autorun: false,
+            connection,
+            prefix,
+          },
+        );
+
+        await worker.waitUntilReady();
+
+        const deduplicationId = 'chain-test';
+
+        // Add first job
+        const firstJob = await queue.add(
+          testName,
+          { data: 'first' },
+          { deduplication: { id: deduplicationId, requeueIfActive: true } },
+        );
+
+        // Start processing
+        worker.run();
+
+        // Wait for processing to start
+        while (!jobProcessingStarted) {
+          await delay(10);
+        }
+
+        // Add second job while first is active - will be requeued
+        const secondJob = await queue.add(
+          testName,
+          { data: 'second' },
+          { deduplication: { id: deduplicationId, requeueIfActive: true } },
+        );
+
+        expect(secondJob.id).to.equal(firstJob.id);
+
+        // Wait for first job to complete and second to become active
+        while (!firstJobCompleted) {
+          await delay(10);
+        }
+
+        // Small delay to let requeue happen
+        await delay(100);
+
+        // Add third job while second (requeued) job is active - should be deduplicated normally
+        const thirdJob = await queue.add(
+          testName,
+          { data: 'third' },
+          { deduplication: { id: deduplicationId, requeueIfActive: true } },
+        );
+
+        // Third job should be deduplicated to the active requeued job
+        expect(thirdJob.id).to.not.equal(
+          firstJob.id,
+          'Third job should get the requeued job ID',
+        );
+
+        // Wait for second job to complete
+        await new Promise<void>(resolve => {
+          worker.on('completed', () => {
+            if (processedJobs >= 2) {
+              resolve();
+            }
+          });
+        });
+
+        expect(processedJobs).to.equal(2); // Only 2 jobs should be processed (first + requeued second)
+
+        await worker.close();
+      });
     });
   });
 });

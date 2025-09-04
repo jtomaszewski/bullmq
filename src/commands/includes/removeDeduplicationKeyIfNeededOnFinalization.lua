@@ -21,11 +21,13 @@ local function removeDeduplicationKeyIfNeededOnFinalization(prefixKey,
         -- Check for pending requeue
         local requeueJobId = rcall('GET', requeueKey)
         if requeueJobId then
-          -- There's a pending requeue, return the new job ID to reschedule
+          -- There's a pending requeue, update deduplication key to point to the requeued job
+          -- and clean up the requeue key
+          rcall("SET", deduplicationKey, requeueJobId)
           rcall("DEL", requeueKey)
           return requeueJobId
         else
-          -- No pending requeue, clean up normally
+          -- No pending requeue, clean up the deduplication key
           return rcall("DEL", deduplicationKey)
         end
       end
