@@ -8,6 +8,7 @@ on:
     branches: [master]
   pull_request:
     branches: [master, next]
+  workflow_dispatch:
 
 concurrency:
   group: test-${{ github.ref }}
@@ -53,7 +54,7 @@ jobs:
           COVERAGE_CHANGE=$(curl -s https://coveralls.io/builds/${{ github.sha }}.json | jq '.coverage_change')
           echo coverage changed by ${COVERAGE_CHANGE}%
 
-          if [[ -z "$(echo ${COVERAGE_CHANGE} ${{ env.allowed_coverage_change }} | awk '$1 >= $2')" ]]; then 
+          if [[ -z "$(echo ${COVERAGE_CHANGE} ${{ env.allowed_coverage_change }} | awk '$1 >= $2')" ]]; then
             echo current coverage change ${COVERAGE_CHANGE}% below threshold ${{ env.allowed_coverage_change }}%
             exit 1
           fi
