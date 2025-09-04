@@ -1,5 +1,5 @@
 {
-  "name": "bullmq",
+  "name": "@jtomaszewski/bullmq",
   "version": "5.58.5",
   "description": "Queue for messages and jobs based on Redis",
   "homepage": "https://bullmq.io/",
