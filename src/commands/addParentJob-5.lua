@@ -83,9 +83,21 @@ else
 end
 
 local deduplicationJobId = deduplicateJob(opts['de'], jobId, KEYS[3],
-  deduplicationKey, eventsKey, maxEvents, args[1])
+  deduplicationKey, eventsKey, maxEvents, args[1], nil)
 if deduplicationJobId then
-  return deduplicationJobId
+  -- Check if this is a requeue mode response
+  if string.sub(deduplicationJobId, 1, 8) == "REQUEUE:" then
+    local originalJobId = string.sub(deduplicationJobId, 9)
+    -- Store the job but don't add to waiting-children queue
+    local delay, priority = storeJob(eventsKey, jobIdKey, jobId, args[3], ARGV[2], opts, timestamp,
+                                     parentKey, parentData, repeatJobKey)
+    -- Emit the deduplicated event with requeue pending flag
+    rcall("XADD", eventsKey, "MAXLEN", "~", maxEvents, "*", "event", "deduplicated", "jobId",
+          originalJobId, "deduplicationId", deduplicationKey, "deduplicatedJobId", jobId, "requeuePending", "true")
+    return originalJobId
+  else
+    return deduplicationJobId
+  end
 end
 
 -- Store the job.

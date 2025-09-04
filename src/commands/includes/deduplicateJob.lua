@@ -4,9 +4,37 @@
 -- Includes
 --- @include "removeJobKeys"
 local function deduplicateJob(deduplicationOpts, jobId, delayedKey, deduplicationKey, eventsKey, maxEvents,
-    prefix)
+    prefix, activeKey)
     local deduplicationId = deduplicationOpts and deduplicationOpts['id']
     if deduplicationId then
+        local requeueIfActive = deduplicationOpts['requeueIfActive']
+        local requeueKey = prefix .. "re:" .. deduplicationId
+        
+        -- Check if requeue mode is enabled
+        if requeueIfActive then
+            local currentJobId = rcall('GET', deduplicationKey)
+            if currentJobId then
+                -- Check if current job is active (only if activeKey is provided)
+                if activeKey and rcall("LPOS", activeKey, currentJobId) then
+                    -- Set pending-requeue flag with the job ID that will be created
+                    rcall('SET', requeueKey, jobId)
+                    -- Return a special value indicating requeue mode - don't return the current job ID
+                    -- This allows the new job to be created but not added to the wait queue
+                    return "REQUEUE:" .. currentJobId
+                else
+                    -- Current job is not active, check if it's waiting/delayed
+                    local currentJobKey = prefix .. currentJobId
+                    if rcall("EXISTS", currentJobKey) == 1 then
+                        -- Job exists but is not active, deduplicate normally
+                        rcall("XADD", eventsKey, "MAXLEN", "~", maxEvents, "*", "event", "deduplicated", "jobId",
+                            currentJobId, "deduplicationId", deduplicationId, "deduplicatedJobId", jobId)
+                        return currentJobId
+                    end
+                    -- Current job doesn't exist (completed/failed), allow new job
+                end
+            end
+        end
+        
         local ttl = deduplicationOpts['ttl']
         if deduplicationOpts['replace'] and ttl and ttl > 0 then
             local currentDebounceJobId = rcall('GET', deduplicationKey)

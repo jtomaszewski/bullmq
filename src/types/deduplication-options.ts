@@ -21,4 +21,9 @@ export type DeduplicationOptions = {
    * replace job record while it's in delayed state
    */
   replace?: boolean;
+
+  /**
+   * If true, ensures at least one execution after the last trigger when job is active
+   */
+  requeueIfActive?: boolean;
 };

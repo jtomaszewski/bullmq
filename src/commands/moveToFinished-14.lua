@@ -135,7 +135,19 @@ if rcall("EXISTS", jobIdKey) == 1 then -- Make sure job exists
 
     local prefix = ARGV[7]
 
-    removeDeduplicationKeyIfNeededOnFinalization(prefix, jobAttributes[3], jobId)
+    local requeueJobId = removeDeduplicationKeyIfNeededOnFinalization(prefix, jobAttributes[3], jobId)
+    
+    -- Check if we need to requeue a job
+    if requeueJobId and requeueJobId ~= 0 and requeueJobId ~= 1 then
+        -- Get the requeue job data from the pending job ID
+        local requeueJobKey = prefix .. requeueJobId
+        if rcall("EXISTS", requeueJobKey) == 1 then
+            -- Add the requeue job to the wait list
+            local waitKey = KEYS[1]
+            rcall("LPUSH", waitKey, requeueJobId)
+            rcall("XADD", eventStreamKey, "*", "event", "requeued", "jobId", requeueJobId, "triggeredBy", jobId)
+        end
+    end
 
     -- If job has a parent we need to
     -- 1) remove this job id from parents dependencies

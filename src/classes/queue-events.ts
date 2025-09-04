@@ -193,6 +193,20 @@ export interface QueueEventsListener extends IoredisListener {
   removed: (args: { jobId: string; prev: string }, id: string) => void;
 
   /**
+   * Listen to 'requeued' event.
+   *
+   * This event is triggered when a job is automatically requeued due to the requeue mode
+   * in deduplication options. This happens when a job completion triggers the requeuing
+   * of a deduplicated job that was waiting while the original job was active.
+   *
+   * @param args - An object containing details about the requeued job.
+   *  - `jobId` - The unique identifier of the job that was requeued.
+   *  - `triggeredBy` - The unique identifier of the job whose completion triggered the requeue.
+   * @param id - The identifier of the event.
+   */
+  requeued: (args: { jobId: string; triggeredBy: string }, id: string) => void;
+
+  /**
    * Listen to 'resumed' event.
    *
    * This event is triggered when the queue is resumed, allowing job processing to continue.

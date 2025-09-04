@@ -957,5 +957,224 @@ describe('deduplication', function () {
         });
       });
     });
+
+    describe('requeue mode', function () {
+      it('should requeue job when requeueIfActive is true and job is active', async function () {
+        const testName = 'test-requeue';
+        let jobProcessingStarted = false;
+        let firstJobCompleted = false;
+        let secondJobProcessed = false;
+
+        const worker = new Worker(
+          queueName,
+          async job => {
+            jobProcessingStarted = true;
+            if (!firstJobCompleted) {
+              // Simulate long-running job
+              await delay(1000);
+              firstJobCompleted = true;
+              return 'first-result';
+            } else {
+              secondJobProcessed = true;
+              return 'second-result';
+            }
+          },
+          {
+            autorun: false,
+            connection,
+            prefix,
+          },
+        );
+
+        await worker.waitUntilReady();
+
+        // Add first job
+        const firstJob = await queue.add(
+          testName,
+          { data: 'first' },
+          { deduplication: { id: 'requeue-test', requeueIfActive: true } },
+        );
+
+        // Start processing
+        worker.run();
+
+        // Wait for processing to start
+        while (!jobProcessingStarted) {
+          await delay(10);
+        }
+
+        // Add second job while first is active - should set requeue flag
+        const secondJob = await queue.add(
+          testName,
+          { data: 'second' },
+          { deduplication: { id: 'requeue-test', requeueIfActive: true } },
+        );
+
+        // Second job should be deduplicated
+        expect(secondJob.id).to.equal(firstJob.id);
+
+        let requeuedEventReceived = false;
+        let requeuedJobId: string;
+
+        queueEvents.once('requeued', ({ jobId, triggeredBy }) => {
+          requeuedEventReceived = true;
+          requeuedJobId = jobId;
+          expect(triggeredBy).to.equal(firstJob.id);
+        });
+
+        // Wait for first job to complete and second to be processed
+        await new Promise<void>(resolve => {
+          worker.on('completed', job => {
+            if (secondJobProcessed) {
+              resolve();
+            }
+          });
+        });
+
+        expect(firstJobCompleted).to.be.true;
+        expect(secondJobProcessed).to.be.true;
+        expect(requeuedEventReceived).to.be.true;
+
+        await worker.close();
+      });
+
+      it('should deduplicate normally when requeueIfActive is true but job is waiting', async function () {
+        const testName = 'test-dedupe-waiting';
+
+        // Add first job (will be waiting)
+        const firstJob = await queue.add(
+          testName,
+          { data: 'first' },
+          { deduplication: { id: 'waiting-test', requeueIfActive: true } },
+        );
+
+        // Add second job - should be deduplicated since first is waiting
+        const secondJob = await queue.add(
+          testName,
+          { data: 'second' },
+          { deduplication: { id: 'waiting-test', requeueIfActive: true } },
+        );
+
+        expect(secondJob.id).to.equal(firstJob.id);
+
+        // Check that no requeue event is emitted
+        let requeuedEventReceived = false;
+        queueEvents.once('requeued', () => {
+          requeuedEventReceived = true;
+        });
+
+        await delay(100);
+        expect(requeuedEventReceived).to.be.false;
+      });
+
+      it('should allow new job when previous job is completed and requeueIfActive is true', async function () {
+        const testName = 'test-completed';
+
+        const worker = new Worker(
+          queueName,
+          async () => {
+            return 'completed';
+          },
+          {
+            autorun: false,
+            connection,
+            prefix,
+          },
+        );
+
+        await worker.waitUntilReady();
+
+        // Add and process first job
+        const firstJob = await queue.add(
+          testName,
+          { data: 'first' },
+          { deduplication: { id: 'completed-test', requeueIfActive: true } },
+        );
+
+        worker.run();
+
+        await new Promise<void>(resolve => {
+          worker.once('completed', () => resolve());
+        });
+
+        // Add second job after first is completed - should create new job
+        const secondJob = await queue.add(
+          testName,
+          { data: 'second' },
+          { deduplication: { id: 'completed-test', requeueIfActive: true } },
+        );
+
+        expect(secondJob.id).to.not.equal(firstJob.id);
+
+        await worker.close();
+      });
+
+      it('should handle multiple requeue requests correctly', async function () {
+        const testName = 'test-multiple-requeue';
+        let jobProcessingStarted = false;
+        let processedJobs = 0;
+
+        const worker = new Worker(
+          queueName,
+          async job => {
+            jobProcessingStarted = true;
+            processedJobs++;
+            await delay(500);
+            return `result-${processedJobs}`;
+          },
+          {
+            autorun: false,
+            connection,
+            prefix,
+          },
+        );
+
+        await worker.waitUntilReady();
+
+        // Add first job
+        const firstJob = await queue.add(
+          testName,
+          { data: 'first' },
+          { deduplication: { id: 'multiple-test', requeueIfActive: true } },
+        );
+
+        // Start processing
+        worker.run();
+
+        // Wait for processing to start
+        while (!jobProcessingStarted) {
+          await delay(10);
+        }
+
+        // Add multiple jobs while first is active - only the last one should be requeued
+        const secondJob = await queue.add(
+          testName,
+          { data: 'second' },
+          { deduplication: { id: 'multiple-test', requeueIfActive: true } },
+        );
+
+        const thirdJob = await queue.add(
+          testName,
+          { data: 'third' },
+          { deduplication: { id: 'multiple-test', requeueIfActive: true } },
+        );
+
+        expect(secondJob.id).to.equal(firstJob.id);
+        expect(thirdJob.id).to.equal(firstJob.id);
+
+        // Wait for both jobs to be processed
+        await new Promise<void>(resolve => {
+          worker.on('completed', () => {
+            if (processedJobs >= 2) {
+              resolve();
+            }
+          });
+        });
+
+        expect(processedJobs).to.equal(2);
+
+        await worker.close();
+      });
+    });
   });
 });
