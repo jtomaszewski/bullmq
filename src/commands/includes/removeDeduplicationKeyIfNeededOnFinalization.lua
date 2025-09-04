@@ -15,15 +15,19 @@ local function removeDeduplicationKeyIfNeededOnFinalization(prefixKey,
       return rcall("DEL", deduplicationKey)
     end
 
-    if pttl == -1 then
+    if pttl == -1 or pttl > 0 then
       local currentJobId = rcall('GET', deduplicationKey)
       if currentJobId and currentJobId == jobId then
         -- Check for pending requeue
         local requeueJobId = rcall('GET', requeueKey)
         if requeueJobId then
           -- There's a pending requeue, update deduplication key to point to the requeued job
-          -- and clean up the requeue key
-          rcall("SET", deduplicationKey, requeueJobId)
+          -- Keep the same TTL if one was set
+          if pttl > 0 then
+            rcall("SET", deduplicationKey, requeueJobId, "PX", pttl)
+          else
+            rcall("SET", deduplicationKey, requeueJobId)
+          end
           rcall("DEL", requeueKey)
           return requeueJobId
         else

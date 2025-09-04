@@ -1371,6 +1371,383 @@ describe('deduplication', function () {
 
         await worker.close();
       });
+
+      describe('requeue mode with other deduplication options', function () {
+        it('should work with TTL option', async function () {
+          this.timeout(10000);
+          const testName = 'test-requeue-ttl';
+          let jobProcessingStarted = false;
+          let processedJobs = 0;
+          const completedJobs: string[] = [];
+
+          const worker = new Worker(
+            queueName,
+            async job => {
+              console.log(`Processing job ${job.id} (${processedJobs + 1})`);
+              jobProcessingStarted = true;
+              processedJobs++;
+              await delay(300);
+              return `result-${processedJobs}`;
+            },
+            {
+              autorun: false,
+              connection,
+              prefix,
+            },
+          );
+
+          await worker.waitUntilReady();
+
+          // Listen for completed jobs
+          worker.on('completed', job => {
+            console.log(`Job ${job.id} completed`);
+            completedJobs.push(job.id!);
+          });
+
+          // Listen for requeue events
+          const queueEvents = new QueueEvents(queueName, {
+            connection,
+            prefix,
+          });
+          await queueEvents.waitUntilReady();
+
+          let requeueCount = 0;
+          queueEvents.on('requeued', args => {
+            console.log(
+              `Job ${args.jobId} requeued, triggered by ${args.triggeredBy}`,
+            );
+            requeueCount++;
+          });
+
+          // Add first job with TTL and requeue
+          const firstJob = await queue.add(
+            testName,
+            { data: 'first' },
+            {
+              deduplication: {
+                id: 'ttl-test',
+                ttl: 5000,
+                requeueIfActive: true,
+              },
+            },
+          );
+          console.log(`Added first job: ${firstJob.id}`);
+
+          // Start processing
+          worker.run();
+
+          // Wait for processing to start
+          let timeout = 50;
+          while (!jobProcessingStarted && timeout-- > 0) {
+            await delay(10);
+          }
+          expect(jobProcessingStarted).to.be.true;
+
+          // Add second job while first is active
+          const secondJob = await queue.add(
+            testName,
+            { data: 'second' },
+            {
+              deduplication: {
+                id: 'ttl-test',
+                ttl: 5000,
+                requeueIfActive: true,
+              },
+            },
+          );
+          console.log(`Added second job: ${secondJob.id}`);
+
+          expect(secondJob.id).to.equal(firstJob.id);
+
+          // Wait for both jobs to complete with timeout
+          await new Promise<void>((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+              reject(
+                new Error(
+                  `Timeout: Only ${completedJobs.length} jobs completed, expected 2. Requeues: ${requeueCount}`,
+                ),
+              );
+            }, 8000);
+
+            worker.on('completed', () => {
+              if (completedJobs.length >= 2) {
+                clearTimeout(timeoutId);
+                resolve();
+              }
+            });
+          });
+
+          expect(processedJobs).to.equal(2);
+          expect(requeueCount).to.equal(1);
+
+          // Verify deduplication key is cleaned up
+          const deduplicationKey = `${prefix}:${queueName}:de:ttl-test`;
+          const keyExists = await connection.exists(deduplicationKey);
+          expect(keyExists).to.equal(0);
+
+          await queueEvents.close();
+          await worker.close();
+        });
+
+        it('should work with extend option', async function () {
+          this.timeout(10000);
+          const testName = 'test-requeue-extend';
+          let jobProcessingStarted = false;
+          let processedJobs = 0;
+          const completedJobs: string[] = [];
+
+          const worker = new Worker(
+            queueName,
+            async job => {
+              console.log(`Processing job ${job.id} (${processedJobs + 1})`);
+              jobProcessingStarted = true;
+              processedJobs++;
+              await delay(300);
+              return `result-${processedJobs}`;
+            },
+            {
+              autorun: false,
+              connection,
+              prefix,
+            },
+          );
+
+          await worker.waitUntilReady();
+
+          // Listen for completed jobs
+          worker.on('completed', job => {
+            console.log(`Job ${job.id} completed`);
+            completedJobs.push(job.id!);
+          });
+
+          // Listen for requeue events
+          const queueEvents = new QueueEvents(queueName, {
+            connection,
+            prefix,
+          });
+          await queueEvents.waitUntilReady();
+
+          let requeueCount = 0;
+          queueEvents.on('requeued', args => {
+            console.log(
+              `Job ${args.jobId} requeued, triggered by ${args.triggeredBy}`,
+            );
+            requeueCount++;
+          });
+
+          // Add first job
+          const firstJob = await queue.add(
+            testName,
+            { data: 'first' },
+            {
+              deduplication: {
+                id: 'extend-test',
+                ttl: 2000,
+                extend: true,
+                requeueIfActive: true,
+              },
+            },
+          );
+          console.log(`Added first job: ${firstJob.id}`);
+
+          // Start processing
+          worker.run();
+
+          // Wait for processing to start
+          let timeout = 50;
+          while (!jobProcessingStarted && timeout-- > 0) {
+            await delay(10);
+          }
+          expect(jobProcessingStarted).to.be.true;
+
+          // Add second job while first is active
+          const secondJob = await queue.add(
+            testName,
+            { data: 'second' },
+            {
+              deduplication: {
+                id: 'extend-test',
+                ttl: 2000,
+                extend: true,
+                requeueIfActive: true,
+              },
+            },
+          );
+          console.log(`Added second job: ${secondJob.id}`);
+
+          expect(secondJob.id).to.equal(firstJob.id);
+
+          // Wait for both jobs to complete with timeout
+          await new Promise<void>((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+              reject(
+                new Error(
+                  `Timeout: Only ${completedJobs.length} jobs completed, expected 2. Requeues: ${requeueCount}`,
+                ),
+              );
+            }, 8000);
+
+            worker.on('completed', () => {
+              if (completedJobs.length >= 2) {
+                clearTimeout(timeoutId);
+                resolve();
+              }
+            });
+          });
+
+          expect(processedJobs).to.equal(2);
+          expect(requeueCount).to.equal(1);
+
+          await queueEvents.close();
+          await worker.close();
+        });
+
+        it('should work with replace option for delayed jobs', async function () {
+          const testName = 'test-requeue-replace';
+          let processedJobs = 0;
+
+          const worker = new Worker(
+            queueName,
+            async job => {
+              processedJobs++;
+              await delay(100);
+              return `result-${processedJobs}`;
+            },
+            {
+              autorun: false,
+              connection,
+              prefix,
+            },
+          );
+
+          await worker.waitUntilReady();
+
+          // Add a delayed job first
+          const delayedJob = await queue.add(
+            testName,
+            { data: 'delayed' },
+            {
+              delay: 1000,
+              deduplication: {
+                id: 'replace-test',
+                ttl: 5000,
+                replace: true,
+                requeueIfActive: true,
+              },
+            },
+          );
+
+          await delay(100);
+
+          // Add another job with replace option - should replace the delayed job
+          const replacingJob = await queue.add(
+            testName,
+            { data: 'replacing' },
+            {
+              delay: 500, // shorter delay
+              deduplication: {
+                id: 'replace-test',
+                ttl: 5000,
+                replace: true,
+                requeueIfActive: true,
+              },
+            },
+          );
+
+          // The replacing job should be different from the original (replace behavior)
+          expect(replacingJob.id).to.not.equal(delayedJob.id);
+
+          // Start processing and wait for completion
+          worker.run();
+
+          await new Promise<void>(resolve => {
+            worker.on('completed', () => {
+              if (processedJobs >= 1) {
+                resolve();
+              }
+            });
+          });
+
+          // Should only process one job (the replacement)
+          expect(processedJobs).to.equal(1);
+
+          await worker.close();
+        });
+
+        it('should handle TTL expiration correctly with requeue', async function () {
+          const testName = 'test-requeue-ttl-expiration';
+          let processedJobs = 0;
+
+          const worker = new Worker(
+            queueName,
+            async job => {
+              processedJobs++;
+              await delay(200);
+              return `result-${processedJobs}`;
+            },
+            {
+              autorun: false,
+              connection,
+              prefix,
+            },
+          );
+
+          await worker.waitUntilReady();
+
+          // Add first job with short TTL
+          const firstJob = await queue.add(
+            testName,
+            { data: 'first' },
+            {
+              deduplication: {
+                id: 'ttl-expire-test',
+                ttl: 300,
+                requeueIfActive: true,
+              },
+            },
+          );
+
+          // Start processing
+          worker.run();
+
+          // Wait for first job to complete
+          await new Promise<void>(resolve => {
+            worker.once('completed', () => resolve());
+          });
+
+          // Wait for TTL to expire
+          await delay(400);
+
+          // Add second job after TTL expiration - should create new job
+          const secondJob = await queue.add(
+            testName,
+            { data: 'second' },
+            {
+              deduplication: {
+                id: 'ttl-expire-test',
+                ttl: 300,
+                requeueIfActive: true,
+              },
+            },
+          );
+
+          // Should be a different job since TTL expired
+          expect(secondJob.id).to.not.equal(firstJob.id);
+
+          // Wait for second job to complete
+          await new Promise<void>(resolve => {
+            worker.on('completed', () => {
+              if (processedJobs >= 2) {
+                resolve();
+              }
+            });
+          });
+
+          expect(processedJobs).to.equal(2);
+
+          await worker.close();
+        });
+      });
     });
   });
 });
